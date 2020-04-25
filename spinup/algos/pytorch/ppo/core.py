@@ -8,6 +8,8 @@ from torch.distributions.normal import Normal
 from torch.distributions.categorical import Categorical
 
 
+import matplotlib.pyplot as plt
+
 def combined_shape(length, shape=None):
     if shape is None:
         return (length,)
@@ -108,7 +110,7 @@ class MLPCritic(nn.Module):
 class MLPActorCritic(nn.Module):
 
 
-    def __init__(self, observation_space, action_space, 
+    def __init__(self, observation_space, action_space,
                  hidden_sizes=(64,64), activation=nn.Tanh):
         super().__init__()
 
@@ -129,6 +131,60 @@ class MLPActorCritic(nn.Module):
             a = pi.sample()
             logp_a = self.pi._log_prob_from_distribution(pi, a)
             v = self.v(obs)
+        return a.numpy(), v.numpy(), logp_a.numpy()
+
+    def act(self, obs):
+        return self.step(obs)[0]
+
+
+class CNNSharedNet(nn.Module):
+    def __init__(self, observation_space):
+        super(CNNSharedNet, self).__init__()
+        input_shape = observation_space.shape
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
+
+        conv_out_size = self._get_conv_out(observation_space)
+
+    def _get_conv_out(self,observation_space):
+        shape = observation_space.shape
+        o = self.conv(torch.zeros(1, *shape))
+        return int(np.prod(o.size()))
+
+    def forward(self, x):
+        conv_out = self.conv(x).view(x.size()[0], -1)
+        return conv_out
+
+class CNNActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space,
+                 hidden_sizes=(64,64), activation=nn.Tanh):
+        super().__init__()
+        # shared network
+        self.shared = CNNSharedNet(observation_space)
+
+        obs_dim = self.shared._get_conv_out(observation_space)
+        # policy builder depends on action space
+        if isinstance(action_space, Box):
+            self.pi = MLPGaussianActor(obs_dim, action_space.shape[0], hidden_sizes, activation)
+        elif isinstance(action_space, Discrete):
+            self.pi = MLPCategoricalActor(obs_dim, action_space.n, hidden_sizes, activation)
+
+        # build value function
+        self.v  = MLPCritic(obs_dim, hidden_sizes, activation)
+
+    def step(self, obs):
+        with torch.no_grad():
+            shared_obs = self.shared(obs.unsqueeze(0)).squeeze()
+            pi = self.pi._distribution(shared_obs)
+            a = pi.sample()
+            logp_a = self.pi._log_prob_from_distribution(pi, a)
+            v = self.v(shared_obs)
         return a.numpy(), v.numpy(), logp_a.numpy()
 
     def act(self, obs):
