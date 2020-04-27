@@ -1,3 +1,5 @@
+# In this fork I have implemented CNN for PPO (the pytorch implementation)
+
 **Status:** Maintenance (expect bug fixes and minor updates)
 
 Welcome to Spinning Up in Deep RL! 
