@@ -162,8 +162,6 @@ class CNNSharedNet(nn.Module):
         return int(np.prod(o.size()))
 
     def forward(self, x):
-        #if len(x.shape) < 4:
-        #x = x.unsqueeze(0)
         x = self.conv(x).view(x.size()[0], -1)
         return self.linear(x)
 
@@ -173,7 +171,7 @@ class CNNActorCritic(nn.Module):
         super().__init__()
         # shared network
         self.shared = CNNSharedNet(observation_space, hidden_sizes[0])
-        obs_dim = 8#self.shared._get_conv_out(observation_space)
+        obs_dim = observation_space.shape[0]
         # policy builder depends on action space
         if isinstance(action_space, Box):
             #self.pi = self.shared
