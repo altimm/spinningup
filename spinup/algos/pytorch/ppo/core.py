@@ -58,6 +58,8 @@ class Actor(nn.Module):
         # Produce action distributions for given observations, and 
         # optionally compute the log likelihood of given actions under
         # those distributions.
+        obs = obs
+        act = act
         pi = self._distribution(obs)
         logp_a = None
         if act is not None:
@@ -72,10 +74,12 @@ class MLPCategoricalActor(Actor):
         self.logits_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
 
     def _distribution(self, obs):
+        obs = obs
         logits = self.logits_net(obs)
         return Categorical(logits=logits)
 
     def _log_prob_from_distribution(self, pi, act):
+        act = act
         return pi.log_prob(act)
 
 
@@ -131,67 +135,80 @@ class MLPActorCritic(nn.Module):
             a = pi.sample()
             logp_a = self.pi._log_prob_from_distribution(pi, a)
             v = self.v(obs)
-        return a.numpy(), v.numpy(), logp_a.numpy()
+        return a.cpu().numpy(), v.cpu().numpy(), logp_a.cpu().numpy()
 
     def act(self, obs):
         return self.step(obs)[0]
 
-
 class CNNSharedNet(nn.Module):
-    def __init__(self, observation_space, shared_out):
+    def __init__(self, observation_space, hidden_sizes):
         super(CNNSharedNet, self).__init__()
-        input_shape = observation_space.shape
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=7, stride=1, padding=3),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU()
-        )
+        pretrained_CNN = 'resnet'+str(hidden_sizes[0])
+        self.resnet = torch.hub.load('pytorch/vision:v0.6.0', pretrained_CNN, pretrained=True)
+        for param in self.resnet.parameters():
+            param.requires_grad = False
 
-        conv_out_size = self._get_conv_out(observation_space)
-
-        self.linear = nn.Sequential(nn.Linear(conv_out_size, 128),
-                                    nn.ReLU(),
-                                    nn.Linear(128, shared_out))
-
-    def _get_conv_out(self,observation_space):
-        shape = observation_space.shape
-        o = self.conv(torch.zeros(1, *shape))
-        return int(np.prod(o.size()))
+        if observation_space.shape[0] == 1:
+            self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=(7,7), stride=(2,2), padding=(3,3), bias=False)
+        self.resnet.fc = nn.Linear(self.resnet.fc.in_features, hidden_sizes[1])
 
     def forward(self, x):
-        x = self.conv(x).view(x.size()[0], -1)
-        return self.linear(x)
-
+        return self.resnet(x)
+#class CNNSharedNet(nn.Module):
+#    def __init__(self, observation_space, hidden_sizes):
+#        super(CNNSharedNet, self).__init__()
+#        input_shape = observation_space.shape
+#        self.conv = nn.Sequential(
+#            nn.Conv2d(1, 32, kernel_size=7, stride=1, padding=3),
+#            nn.ReLU(),
+#            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+#            nn.ReLU(),
+#            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+#            nn.ReLU()
+#        )
+#
+#        conv_out_size = self._get_conv_out(observation_space)
+#
+#        self.linear = nn.Sequential(nn.Linear(conv_out_size, 128),
+#                                    nn.ReLU(),
+#                                    nn.Linear(128, hidden_sizes[1]))
+#
+#    def _get_conv_out(self,observation_space):
+#        shape = observation_space.shape
+#        o = self.conv(torch.zeros(1, *shape))
+#        return int(np.prod(o.size()))
+#
+#    def forward(self, x):
+#        x = self.conv(x).view(x.size()[0], -1)
+#        return self.linear(x)
 class CNNActorCritic(nn.Module):
     def __init__(self, observation_space, action_space,
-                 hidden_sizes=(64,64), activation=nn.Tanh):
+                 hidden_sizes=(18,64,64), activation=nn.Tanh):
         super().__init__()
         # shared network
-        self.shared = CNNSharedNet(observation_space, hidden_sizes[0])
-        obs_dim = observation_space.shape[0]
+        self.shared = CNNSharedNet(observation_space, hidden_sizes)
+        hidden_sizes.pop(0)
+        dummy_obs_dim_to_be_replaced = 1
         # policy builder depends on action space
         if isinstance(action_space, Box):
-            #self.pi = self.shared
-            self.pi = MLPGaussianActor(obs_dim, action_space.shape[0], hidden_sizes, activation)
+            self.pi = MLPGaussianActor(dummy_obs_dim_to_be_replaced, action_space.shape[0], hidden_sizes, activation)
             self.pi.mu_net[0] = self.shared
         elif isinstance(action_space, Discrete):
-            self.pi = MLPCategoricalActor(obs_dim, action_space.n, hidden_sizes, activation)
-            self.pi.mu_net[0] = self.shared
+            self.pi = MLPCategoricalActor(dummy_obs_dim_to_be_replaced, action_space.n, hidden_sizes, activation)
+            self.pi.logits_net[0] = self.shared
         # build value function
-        self.v  = MLPCritic(obs_dim, hidden_sizes, activation)
+        self.v  = MLPCritic(dummy_obs_dim_to_be_replaced, hidden_sizes, activation)
         self.v.v_net[0] = self.shared
 
     def step(self, obs):
+        obs = obs
         with torch.no_grad():
             pi = self.pi._distribution(obs.unsqueeze(0))
             a = pi.sample()
             logp_a = self.pi._log_prob_from_distribution(pi, a)
             a = a[0]
             v = self.v(obs.unsqueeze(0))
-        return a.numpy(), v.numpy(), logp_a.numpy()
+        return a.cpu().numpy(), v.cpu().numpy(), logp_a.cpu().numpy()
 
     def act(self, obs):
         return self.step(obs)[0]
